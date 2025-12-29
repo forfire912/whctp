@@ -1,0 +1,22 @@
+{
+    "ctp": {
+        "broker_id": "9999",
+        "user_id": "",
+        "password": "",
+        "trade_front": "tcp://180.168.146.187:10130",
+        "market_front": "tcp://180.168.146.187:10131",
+        "app_id": "",
+        "auth_code": ""
+    },
+    "database": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "",
+        "database": "ctp_trading"
+    },
+    "auto_download": {
+        "enabled": false,
+        "interval": 300
+    }
+}
