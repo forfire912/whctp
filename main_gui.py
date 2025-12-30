@@ -440,19 +440,23 @@ class CTPTradingGUI:
             )
             
             # 设置回调
-            self.trader_api.set_callback('on_connected', lambda: self.log("交易前置连接成功"))
-            self.trader_api.set_callback('on_login', lambda d: self.log(f"登录成功: {d}"))
-            self.trader_api.set_callback('on_error', lambda e: self.log(f"错误: {e}"))
-            
-            # 连接和登录
-            if self.trader_api.connect() and self.trader_api.login():
-                self.is_connected = True
+                self.trader_api.set_callback('on_connected', lambda *_: self.log("交易前置连接成功"))
+                def on_login_callback(d, *_):
                 self.is_logged_in = True
+                self.is_connected = True
                 self.connect_btn.config(state=tk.DISABLED)
                 self.disconnect_btn.config(state=tk.NORMAL)
+                # 启用下载按钮（如有）
+                self.log(f"登录成功: {d}")
                 self.update_status("已连接")
-                self.log("CTP系统连接成功")
-                messagebox.showinfo("成功", "连接成功！")
+                messagebox.showinfo("成功", "CTP系统登录成功！")
+            self.trader_api.set_callback('on_login', on_login_callback)
+                self.trader_api.set_callback('on_error', lambda e, *_: self.log(f"错误: {e}"))
+            
+            # 连接和登录
+            if self.trader_api.connect():
+                # login() 只是发起登录，真正登录成功由回调处理
+                self.trader_api.login()
             else:
                 messagebox.showerror("错误", "CTP连接失败")
                 
@@ -479,15 +483,18 @@ class CTPTradingGUI:
         if not self.is_logged_in:
             messagebox.showwarning("警告", "请先连接到CTP系统")
             return
-        
         def task():
             self.log("开始下载委托数据...")
-            # TODO: 调用API获取实际数据
-            # orders = self.trader_api.query_orders()
-            # self.db_manager.insert_orders(orders)
-            self.log("委托数据下载完成")
+            try:
+                orders = self.trader_api.query_orders() if self.trader_api else []
+                if orders:
+                    count = self.db_manager.insert_orders(orders)
+                    self.log(f"委托数据下载并入库完成，共{count}条")
+                else:
+                    self.log("未获取到委托数据")
+            except Exception as e:
+                self.log(f"下载委托数据异常: {e}")
             self.query_orders()
-        
         threading.Thread(target=task, daemon=True).start()
     
     def download_positions(self):
@@ -495,13 +502,18 @@ class CTPTradingGUI:
         if not self.is_logged_in:
             messagebox.showwarning("警告", "请先连接到CTP系统")
             return
-        
         def task():
             self.log("开始下载持仓数据...")
-            # TODO: 调用API获取实际数据
-            self.log("持仓数据下载完成")
+            try:
+                positions = self.trader_api.query_positions() if self.trader_api else []
+                if positions:
+                    count = self.db_manager.insert_positions(positions)
+                    self.log(f"持仓数据下载并入库完成，共{count}条")
+                else:
+                    self.log("未获取到持仓数据")
+            except Exception as e:
+                self.log(f"下载持仓数据异常: {e}")
             self.query_positions()
-        
         threading.Thread(target=task, daemon=True).start()
     
     def download_market_data(self):
@@ -517,13 +529,18 @@ class CTPTradingGUI:
         if not self.is_logged_in:
             messagebox.showwarning("警告", "请先连接到CTP系统")
             return
-        
         def task():
             self.log("开始下载合约参数...")
-            # TODO: 调用API获取实际数据
-            self.log("合约参数下载完成")
+            try:
+                instruments = self.trader_api.query_instruments() if self.trader_api else []
+                if hasattr(self.db_manager, 'insert_instruments'):
+                    count = self.db_manager.insert_instruments(instruments)
+                    self.log(f"合约参数下载并入库完成，共{count}条")
+                else:
+                    self.log("合约参数入库方法未实现，仅下载完成")
+            except Exception as e:
+                self.log(f"下载合约参数异常: {e}")
             self.query_instruments()
-        
         threading.Thread(target=task, daemon=True).start()
     
     def query_orders(self):
@@ -561,8 +578,32 @@ class CTPTradingGUI:
         self.download_orders()
     
     def export_orders(self):
-        """导出委托数据"""
-        self.log("导出功能开发中...")
+        """导出委托数据为CSV"""
+        import csv
+        from tkinter import filedialog
+        trading_day = self.orders_trading_day_var.get() or None
+        instrument_id = self.orders_instrument_var.get() or None
+        orders = self.db_manager.query_orders(trading_day, instrument_id)
+        if not orders:
+            self.log("无委托数据可导出")
+            messagebox.showinfo("导出", "无委托数据可导出")
+            return
+        file_path = filedialog.asksaveasfilename(
+            defaultextension='.csv',
+            filetypes=[('CSV文件', '*.csv')],
+            title='导出委托数据为CSV')
+        if not file_path:
+            return
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=orders[0].keys())
+                writer.writeheader()
+                writer.writerows(orders)
+            self.log(f"委托数据已导出到: {file_path}")
+            messagebox.showinfo("导出成功", f"委托数据已导出到: {file_path}")
+        except Exception as e:
+            self.log(f"导出失败: {e}")
+            messagebox.showerror("导出失败", str(e))
     
     def query_positions(self):
         """查询持仓数据"""
@@ -599,8 +640,32 @@ class CTPTradingGUI:
         self.download_positions()
     
     def export_positions(self):
-        """导出持仓数据"""
-        self.log("导出功能开发中...")
+        """导出持仓数据为CSV"""
+        import csv
+        from tkinter import filedialog
+        trading_day = self.positions_trading_day_var.get() or None
+        instrument_id = self.positions_instrument_var.get() or None
+        positions = self.db_manager.query_positions(trading_day, instrument_id)
+        if not positions:
+            self.log("无持仓数据可导出")
+            messagebox.showinfo("导出", "无持仓数据可导出")
+            return
+        file_path = filedialog.asksaveasfilename(
+            defaultextension='.csv',
+            filetypes=[('CSV文件', '*.csv')],
+            title='导出持仓数据为CSV')
+        if not file_path:
+            return
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=positions[0].keys())
+                writer.writeheader()
+                writer.writerows(positions)
+            self.log(f"持仓数据已导出到: {file_path}")
+            messagebox.showinfo("导出成功", f"持仓数据已导出到: {file_path}")
+        except Exception as e:
+            self.log(f"导出失败: {e}")
+            messagebox.showerror("导出失败", str(e))
     
     def query_market_data(self):
         """查询行情数据"""
