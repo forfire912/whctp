@@ -172,21 +172,40 @@ class CTPTradingGUI:
         # 使用模拟CTP开关
         ttk.Label(frame, text="使用模拟CTP:").grid(row=2, column=6, sticky=tk.W, padx=5)
         self.use_mock_ctp_var = tk.BooleanVar(value=self.config.get('ctp', {}).get('use_mock', False))
-        ttk.Checkbutton(frame, variable=self.use_mock_ctp_var).grid(row=2, column=7, sticky=tk.W, padx=5)
+        self.use_mock_ctp_cb = ttk.Checkbutton(frame, variable=self.use_mock_ctp_var, command=self.on_use_mock_ctp_changed)
+        self.use_mock_ctp_cb.grid(row=2, column=7, sticky=tk.W, padx=5)
 
         # 连接按钮
         button_frame = ttk.Frame(frame)
         button_frame.grid(row=3, column=0, columnspan=7, pady=10)
-        
         self.connect_btn = ttk.Button(button_frame, text="连接", command=self.connect_to_ctp)
         self.connect_btn.pack(side=tk.LEFT, padx=5)
-        
         self.disconnect_btn = ttk.Button(button_frame, text="断开", command=self.disconnect_from_ctp, state=tk.DISABLED)
         self.disconnect_btn.pack(side=tk.LEFT, padx=5)
-        
         self.save_config_btn = ttk.Button(button_frame, text="保存配置", command=self.save_config_from_ui)
         self.save_config_btn.pack(side=tk.LEFT, padx=5)
-    
+        self.update_connect_btn_state()
+
+    def on_use_mock_ctp_changed(self):
+        """切换模拟/真实CTP时自动断开并重置状态"""
+        if self.is_connected or self.is_logged_in:
+            self.disconnect_from_ctp()
+        self.update_connect_btn_state()
+
+    def update_connect_btn_state(self):
+        """根据当前分支和连接状态动态调整连接按钮"""
+        use_mock = self.use_mock_ctp_var.get()
+        if use_mock:
+            self.connect_btn.config(text="连接模拟CTP")
+        else:
+            self.connect_btn.config(text="连接真实CTP")
+        if self.is_connected:
+            self.connect_btn.config(state=tk.DISABLED)
+            self.disconnect_btn.config(state=tk.NORMAL)
+        else:
+            self.connect_btn.config(state=tk.NORMAL)
+            self.disconnect_btn.config(state=tk.DISABLED)
+
     def create_action_frame(self, parent):
         """创建功能按钮区域"""
         frame = ttk.LabelFrame(parent, text="功能操作", padding="10")
@@ -503,7 +522,8 @@ class CTPTradingGUI:
     def connect_to_ctp(self):
         """连接到CTP系统"""
         try:
-            self.log("正在连接到CTP系统...")
+            self.log("[连接] 开始连接到CTP系统...")
+            self.is_logged_in = False  # 连接前重置登录状态，防止旧状态影响
 
             # 初始化数据库
             self.db_manager = DatabaseManager(
@@ -513,38 +533,39 @@ class CTPTradingGUI:
                 database=self.config['database']['database']
             )
             if not self.db_manager.connect():
+                self.log("[连接] 数据库连接失败")
                 messagebox.showerror("错误", "数据库连接失败")
                 return
-            self.log("数据库连接成功")
+            self.log("[连接] 数据库连接成功")
 
             # 根据界面开关唯一决定使用真实/模拟CTP
             use_mock = self.use_mock_ctp_var.get()
             if use_mock:
                 from ctp_api_wrapper import CTPTraderAPI as TraderCls
-                self.log("当前选择: 使用模拟CTP API")
+                self.log("[连接] 当前选择: 使用模拟CTP API")
             else:
-                # 严格使用真实实现，若导入失败或库不可用则直接报错
                 try:
                     from ctp_api_real import CTPTraderAPIReal as TraderCls
                 except Exception as e:
-                    err = f"导入真实CTP实现失败，请检查openctp-ctp安装和环境: {e}"
+                    err = f"[连接] 导入真实CTP实现失败，请检查openctp-ctp安装和环境: {e}"
                     self.log(err)
                     messagebox.showerror("错误", err)
                     return
-                self.log("当前选择: 使用真实CTP API")
+                self.log("[连接] 当前选择: 使用真实CTP API")
 
             # 初始化CTP API
             if use_mock:
-                self.trader_api = TraderCls(
+                trader_params = dict(
                     broker_id=self.broker_id_var.get(),
                     user_id=self.user_id_var.get(),
                     password=self.password_var.get(),
                     front_addr=self.trade_front_var.get()
                 )
+                self.log(f"[连接] 模拟CTP初始化参数: {trader_params}")
+                self.trader_api = TraderCls(**trader_params)
             else:
-                # 真实 CTP 需要 AppID 和 AuthCode，用于认证
                 ctp_conf = self.config.get('ctp', {})
-                self.trader_api = TraderCls(
+                trader_params = dict(
                     broker_id=self.broker_id_var.get(),
                     user_id=self.user_id_var.get(),
                     password=self.password_var.get(),
@@ -552,33 +573,88 @@ class CTPTradingGUI:
                     app_id=ctp_conf.get('app_id'),
                     auth_code=ctp_conf.get('auth_code')
                 )
-
+                self.log(f"[连接] 真实CTP初始化参数: {trader_params}")
+                self.trader_api = TraderCls(**trader_params)
 
             # 设置回调，兼容模拟/真实API参数
-            self.trader_api.set_callback('on_connected', lambda *_: self.log("交易前置连接成功"))
+            self.trader_api.set_callback('on_connected', lambda *_: self.log("[连接] 交易前置连接成功"))
+            self.trader_api.set_callback('on_authenticate', lambda d, *_: self.on_ctp_authenticate(d))
             self.trader_api.set_callback('on_login', lambda d, *_: self.on_ctp_login_success(d))
-            self.trader_api.set_callback('on_error', lambda e, *_: self.log(f"错误: {e}"))
+            self.trader_api.set_callback('on_error', lambda e, *_: self.log(f"[连接] 错误: {e}"))
 
             # 连接和登录
+            self.log("[连接] 开始发起前置连接...")
+            # 打印connect参数（如有）
+            if hasattr(self.trader_api, 'connect'):
+                self.log(f"[连接] connect方法参数: 无（或由trader_api内部保存）")
             if self.trader_api.connect():
                 self.is_connected = True
-                self.connect_btn.config(state=tk.DISABLED)
-                self.disconnect_btn.config(state=tk.NORMAL)
-                self.log("CTP系统连接成功")
-                # 注意：这里不能立即设置 is_logged_in = True，必须等待 on_login 回调
+                self.update_connect_btn_state()
+                use_mock = self.use_mock_ctp_var.get()
+                if use_mock:
+                    self.log("[连接] CTP系统连接成功（模拟模式）")
+                    self.update_status("已连接（模拟CTP）")
+                else:
+                    self.log("[连接] CTP前置连接成功，准备发起认证/登录...（最长约10秒，超时请检查网络/账号/认证信息）")
+                    self.update_status("已连接，等待认证...")
+                    # 启动登录超时检测
+                    self.root.after(10000, self._check_login_timeout)
+                self.log("[认证] 开始发起CTP认证...")
+                # 打印认证参数（如有）
+                if hasattr(self.trader_api, 'authenticate'):
+                    if hasattr(self.trader_api, 'get_auth_params'):
+                        self.log(f"[认证] 认证参数: {self.trader_api.get_auth_params()}")
+                    else:
+                        self.log("[认证] 认证参数: 由trader_api内部保存")
+                    self.trader_api.authenticate()
+                else:
+                    if hasattr(self.trader_api, 'get_login_params'):
+                        self.log(f"[登录] 登录参数: {self.trader_api.get_login_params()}")
+                    else:
+                        self.log("[登录] 登录参数: 由trader_api内部保存")
+                    self.trader_api.login()
             else:
+                self.log("[连接] CTP连接失败")
                 messagebox.showerror("错误", "CTP连接失败")
-
         except Exception as e:
-            self.log(f"连接失败: {e}")
+            self.log(f"[连接] 连接失败: {e}")
             messagebox.showerror("错误", f"连接失败: {e}")
+
+    def on_ctp_authenticate(self, auth_info):
+        """处理CTP认证回调"""
+        self.log(f"[认证] CTP认证回调: {auth_info}")
+        # 认证成功后自动发起登录
+        if auth_info and auth_info.get('ErrorID', 0) == 0:
+            self.log("[认证] 认证成功，开始发起登录...")
+            # 打印登录参数（如有）
+            if hasattr(self.trader_api, 'get_login_params'):
+                self.log(f"[登录] 登录参数: {self.trader_api.get_login_params()}")
+            else:
+                self.log("[登录] 登录参数: 由trader_api内部保存")
+            if hasattr(self.trader_api, 'login'):
+                self.trader_api.login()
+        else:
+            self.log(f"[认证] 认证失败: {auth_info}")
+            messagebox.showerror("认证失败", f"CTP认证失败: {auth_info}")
+            self.disconnect_from_ctp()
+
+    def _check_login_timeout(self):
+        if not self.is_logged_in and self.is_connected:
+            self.log("[认证] 登录超时：10秒内未收到CTP登录回调，请检查网络、账号、认证信息或联系柜台。")
+            messagebox.showerror("登录超时", "10秒内未收到CTP登录回调，请检查网络、账号、认证信息或联系柜台。")
+            self.disconnect_from_ctp()
 
     def on_ctp_login_success(self, login_info):
         """处理CTP登录成功回调"""
-        self.is_logged_in = True  # 确保正确设置登录状态
+        self.is_logged_in = True
         self.update_status("已登录")
-        self.log(f"登录成功: {login_info}")
-        # 登录成功后，可以显示连接成功的提示
+        self.log(f"[登录] CTP系统登录成功: {login_info}")
+        # 打印登录成功后相关参数
+        if hasattr(self.trader_api, 'get_login_params'):
+            self.log(f"[登录] 登录参数: {self.trader_api.get_login_params()}")
+        else:
+            self.log("[登录] 登录参数: 由trader_api内部保存")
+        self.update_connect_btn_state()
         messagebox.showinfo("成功", "连接成功！")
 
     def disconnect_from_ctp(self):
@@ -587,11 +663,9 @@ class CTPTradingGUI:
             self.trader_api.disconnect()
         if self.db_manager:
             self.db_manager.close()
-        
         self.is_connected = False
         self.is_logged_in = False
-        self.connect_btn.config(state=tk.NORMAL)
-        self.disconnect_btn.config(state=tk.DISABLED)
+        self.update_connect_btn_state()
         self.update_status("已断开")
         self.log("已断开连接")
 
@@ -702,7 +776,7 @@ class CTPTradingGUI:
         self.query_orders()
     
     def export_orders(self):
-        """导出委托数据为CSV"""
+        """导出委托数据为CSV，按委托时间排序，表头使用中文"""
         import csv
         from tkinter import filedialog
         trading_day = self.orders_trading_day_var.get() or None
@@ -712,17 +786,32 @@ class CTPTradingGUI:
             self.log("无委托数据可导出")
             messagebox.showinfo("导出", "无委托数据可导出")
             return
+        # 按委托时间排序（如有order_time字段）
+        orders = sorted(orders, key=lambda x: x.get('order_time', ''))
         file_path = filedialog.asksaveasfilename(
             defaultextension='.csv',
             filetypes=[('CSV文件', '*.csv')],
             title='导出委托数据为CSV')
         if not file_path:
             return
+        # 中文表头
+        headers = [
+            ("order_time", "委托时间"),
+            ("instrument_id", "合约"),
+            ("direction", "方向"),
+            ("offset_flag", "开平"),
+            ("order_price", "委托价"),
+            ("order_volume", "委托量"),
+            ("traded_volume", "成交量"),
+            ("order_status", "状态"),
+            ("remark", "备注")
+        ]
         try:
             with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=orders[0].keys())
-                writer.writeheader()
-                writer.writerows(orders)
+                writer = csv.writer(f)
+                writer.writerow([h[1] for h in headers])
+                for order in orders:
+                    writer.writerow([order.get(h[0], '') for h in headers])
             self.log(f"委托数据已导出到: {file_path}")
             messagebox.showinfo("导出成功", f"委托数据已导出到: {file_path}")
         except Exception as e:
@@ -764,7 +853,7 @@ class CTPTradingGUI:
         self.query_positions()
     
     def export_positions(self):
-        """导出持仓数据为CSV"""
+        """导出持仓数据为CSV，按合约排序，表头使用中文"""
         import csv
         from tkinter import filedialog
         trading_day = self.positions_trading_day_var.get() or None
@@ -774,17 +863,32 @@ class CTPTradingGUI:
             self.log("无持仓数据可导出")
             messagebox.showinfo("导出", "无持仓数据可导出")
             return
+        # 按合约排序（如有instrument_id字段）
+        positions = sorted(positions, key=lambda x: x.get('instrument_id', ''))
         file_path = filedialog.asksaveasfilename(
             defaultextension='.csv',
             filetypes=[('CSV文件', '*.csv')],
             title='导出持仓数据为CSV')
         if not file_path:
             return
+        # 中文表头
+        headers = [
+            ("instrument_id", "合约"),
+            ("direction", "方向"),
+            ("position_type", "类型"),
+            ("volume", "持仓量"),
+            ("available_volume", "可用"),
+            ("open_price", "开仓价"),
+            ("position_price", "持仓价"),
+            ("close_profit", "平仓盈亏"),
+            ("position_profit", "持仓盈亏")
+        ]
         try:
             with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=positions[0].keys())
-                writer.writeheader()
-                writer.writerows(positions)
+                writer = csv.writer(f)
+                writer.writerow([h[1] for h in headers])
+                for pos in positions:
+                    writer.writerow([pos.get(h[0], '') for h in headers])
             self.log(f"持仓数据已导出到: {file_path}")
             messagebox.showinfo("导出成功", f"持仓数据已导出到: {file_path}")
         except Exception as e:

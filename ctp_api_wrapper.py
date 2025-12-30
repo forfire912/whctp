@@ -92,12 +92,13 @@ class CTPTraderAPI:
             self.request_id += 1
             
             if self.callbacks['on_login']:
+                # 兼容 lambda d, *_: ...
                 self.callbacks['on_login']({
                     'broker_id': self.broker_id,
                     'user_id': self.user_id,
                     'login_time': datetime.now().strftime('%H:%M:%S'),
                     'trading_day': datetime.now().strftime('%Y%m%d')
-                })
+                }, None)
             
             return True
         except Exception as e:
