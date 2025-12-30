@@ -1,18 +1,18 @@
 {
     "ctp": {
-        "broker_id": "9999",
-        "user_id": "",
-        "password": "",
-        "trade_front": "tcp://180.168.146.187:10130",
-        "market_front": "tcp://180.168.146.187:10131",
-        "app_id": "",
-        "auth_code": ""
+        "broker_id": "1010",
+        "user_id": "13021235076",
+        "password": "Wendy#2025",
+        "trade_front": "tcp://106.37.101.162:31205",
+        "market_front": "tcp://106.37.101.162:31213",
+        "app_id": "11111111",
+        "auth_code": "YHQHYHQHYHQHYHQH"
     },
     "database": {
         "host": "localhost",
         "port": 3306,
         "user": "root",
-        "password": "",
+        "password": "Aa#123456",
         "database": "ctp_trading"
     },
     "auto_download": {

@@ -8,20 +8,15 @@ CTP期货交易管理系统 - 主界面
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, date
 import json
 import os
 from typing import Dict, Any
+from tkcalendar import Calendar
 
-# 尝试导入真实CTP API，如果不可用则使用模拟API
-try:
-    from ctp_api_real import CTPTraderAPI
-    print("加载真实CTP API")
-except ImportError:
-    from ctp_api_wrapper import CTPTraderAPI
-    print("加载模拟CTP API")
-
+# 市场行情暂时仍使用模拟封装
 from ctp_api_wrapper import CTPMarketAPI
+
 from database_manager import DatabaseManager
 
 
@@ -33,6 +28,9 @@ class CTPTradingGUI:
         self.root = root
         self.root.title("CTP期货交易管理系统")
         self.root.geometry("1200x800")
+        
+        # 当前交易日（默认为今天）
+        self.current_trading_day = datetime.now().strftime('%Y%m%d')
         
         # 配置文件路径
         self.config_file = "config.json"
@@ -171,6 +169,11 @@ class CTPTradingGUI:
         self.db_password_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.db_password_var, show="*", width=15).grid(row=2, column=5, sticky=tk.W, padx=5)
         
+        # 使用模拟CTP开关
+        ttk.Label(frame, text="使用模拟CTP:").grid(row=2, column=6, sticky=tk.W, padx=5)
+        self.use_mock_ctp_var = tk.BooleanVar(value=self.config.get('ctp', {}).get('use_mock', False))
+        ttk.Checkbutton(frame, variable=self.use_mock_ctp_var).grid(row=2, column=7, sticky=tk.W, padx=5)
+
         # 连接按钮
         button_frame = ttk.Frame(frame)
         button_frame.grid(row=3, column=0, columnspan=7, pady=10)
@@ -229,6 +232,67 @@ class CTPTradingGUI:
         notebook.add(self.instruments_frame, text="商品参数")
         self.create_instruments_tab(self.instruments_frame)
     
+    def _select_trading_day(self, var: tk.StringVar, table: str):
+        """弹出日历对话框，选择交易日（仅限数据库中已有的交易日）"""
+        if not self.db_manager:
+            messagebox.showwarning("警告", "请先连接数据库")
+            return
+
+        # 从指定表获取已存在的交易日列表，如 daily_orders / daily_positions
+        days = self.db_manager.get_distinct_trading_days(table)
+        if not days:
+            messagebox.showinfo("提示", "当前没有可选择的交易日，请先下载数据")
+            return
+
+        # 转为 date 集合，便于校验
+        available_dates = set()
+        for d in days:
+            try:
+                available_dates.add(datetime.strptime(d, "%Y%m%d").date())
+            except Exception:
+                continue
+
+        if not available_dates:
+            messagebox.showinfo("提示", "交易日数据格式异常，无法选择")
+            return
+
+        # 当前默认选中值：优先用 var 当前值，否则用最新一个交易日
+        try:
+            current_value = var.get().strip() or days[0]
+            current_date = datetime.strptime(current_value, "%Y%m%d").date()
+        except Exception:
+            # 回退到可用日期中的最大值（最近交易日）
+            current_date = max(available_dates)
+
+        top = tk.Toplevel(self.root)
+        top.title("选择交易日")
+        top.grab_set()
+        top.resizable(False, False)
+
+        ttk.Label(top, text="请选择交易日（仅高亮日期为有数据的交易日）").grid(row=0, column=0, columnspan=2, padx=10, pady=5)
+
+        # 创建日历控件
+        cal = Calendar(
+            top,
+            selectmode="day",
+            year=current_date.year,
+            month=current_date.month,
+            day=current_date.day,
+            date_pattern="yyyyMMdd"
+        )
+        cal.grid(row=1, column=0, columnspan=2, padx=10, pady=5)
+
+        def on_ok():
+            selected = cal.selection_get()  # datetime.date
+            if selected not in available_dates:
+                messagebox.showwarning("提示", "该日期无数据，请选择有数据的交易日")
+                return
+            var.set(selected.strftime("%Y%m%d"))
+            top.destroy()
+
+        ttk.Button(top, text="确定", command=on_ok).grid(row=2, column=0, padx=10, pady=10)
+        ttk.Button(top, text="取消", command=top.destroy).grid(row=2, column=1, padx=10, pady=10)
+
     def create_orders_tab(self, parent):
         """创建委托数据标签页"""
         # 查询条件
@@ -236,15 +300,21 @@ class CTPTradingGUI:
         query_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(query_frame, text="交易日:").pack(side=tk.LEFT, padx=5)
-        self.orders_trading_day_var = tk.StringVar(value=datetime.now().strftime('%Y%m%d'))
-        ttk.Entry(query_frame, textvariable=self.orders_trading_day_var, width=15).pack(side=tk.LEFT, padx=5)
+        self.orders_trading_day_var = tk.StringVar(value=self.current_trading_day)
+        entry = ttk.Entry(query_frame, textvariable=self.orders_trading_day_var, width=12, state='readonly')
+        entry.pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            query_frame,
+            text="选择...",
+            command=lambda: self._select_trading_day(self.orders_trading_day_var, 'daily_orders')
+        ).pack(side=tk.LEFT, padx=2)
         
         ttk.Label(query_frame, text="合约:").pack(side=tk.LEFT, padx=5)
         self.orders_instrument_var = tk.StringVar()
         ttk.Entry(query_frame, textvariable=self.orders_instrument_var, width=15).pack(side=tk.LEFT, padx=5)
         
         ttk.Button(query_frame, text="查询", command=self.query_orders).pack(side=tk.LEFT, padx=5)
-        ttk.Button(query_frame, text="刷新", command=self.refresh_orders).pack(side=tk.LEFT, padx=5)
+        ttk.Button(query_frame, text="刷新", command=self.query_orders).pack(side=tk.LEFT, padx=5)
         ttk.Button(query_frame, text="导出", command=self.export_orders).pack(side=tk.LEFT, padx=5)
         
         # 数据表格
@@ -259,15 +329,21 @@ class CTPTradingGUI:
         query_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(query_frame, text="交易日:").pack(side=tk.LEFT, padx=5)
-        self.positions_trading_day_var = tk.StringVar(value=datetime.now().strftime('%Y%m%d'))
-        ttk.Entry(query_frame, textvariable=self.positions_trading_day_var, width=15).pack(side=tk.LEFT, padx=5)
+        self.positions_trading_day_var = tk.StringVar(value=self.current_trading_day)
+        entry = ttk.Entry(query_frame, textvariable=self.positions_trading_day_var, width=12, state='readonly')
+        entry.pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            query_frame,
+            text="选择...",
+            command=lambda: self._select_trading_day(self.positions_trading_day_var, 'daily_positions')
+        ).pack(side=tk.LEFT, padx=2)
         
         ttk.Label(query_frame, text="合约:").pack(side=tk.LEFT, padx=5)
         self.positions_instrument_var = tk.StringVar()
         ttk.Entry(query_frame, textvariable=self.positions_instrument_var, width=15).pack(side=tk.LEFT, padx=5)
         
         ttk.Button(query_frame, text="查询", command=self.query_positions).pack(side=tk.LEFT, padx=5)
-        ttk.Button(query_frame, text="刷新", command=self.refresh_positions).pack(side=tk.LEFT, padx=5)
+        ttk.Button(query_frame, text="刷新", command=self.query_positions).pack(side=tk.LEFT, padx=5)
         ttk.Button(query_frame, text="导出", command=self.export_positions).pack(side=tk.LEFT, padx=5)
         
         # 数据表格
@@ -376,10 +452,19 @@ class CTPTradingGUI:
         self.db_user_var.set(self.config['database']['user'])
         self.db_password_var.set(self.config['database']['password'])
         
+        # 使用模拟CTP配置
+        self.use_mock_ctp_var.set(self.config['ctp'].get('use_mock', False))
+
         # 自动下载配置
         self.auto_download_var.set(self.config['auto_download']['enabled'])
         self.interval_var.set(str(self.config['auto_download']['interval']))
-    
+        
+        # 初始化交易日选择为当前交易日
+        if hasattr(self, 'orders_trading_day_var'):
+            self.orders_trading_day_var.set(self.current_trading_day)
+        if hasattr(self, 'positions_trading_day_var'):
+            self.positions_trading_day_var.set(self.current_trading_day)
+
     def save_config_from_ui(self):
         """从界面保存配置"""
         self.config['ctp']['broker_id'] = self.broker_id_var.get()
@@ -387,7 +472,10 @@ class CTPTradingGUI:
         self.config['ctp']['password'] = self.password_var.get()
         self.config['ctp']['trade_front'] = self.trade_front_var.get()
         self.config['ctp']['market_front'] = self.market_front_var.get()
-        
+        # 保存是否使用模拟CTP
+        self.config['ctp']['use_mock'] = self.use_mock_ctp_var.get()
+
+        # 数据库配置
         self.config['database']['host'] = self.db_host_var.get()
         self.config['database']['user'] = self.db_user_var.get()
         self.config['database']['password'] = self.db_password_var.get()
@@ -416,7 +504,7 @@ class CTPTradingGUI:
         """连接到CTP系统"""
         try:
             self.log("正在连接到CTP系统...")
-            
+
             # 初始化数据库
             self.db_manager = DatabaseManager(
                 host=self.db_host_var.get(),
@@ -424,46 +512,75 @@ class CTPTradingGUI:
                 password=self.db_password_var.get(),
                 database=self.config['database']['database']
             )
-            
             if not self.db_manager.connect():
                 messagebox.showerror("错误", "数据库连接失败")
                 return
-            
             self.log("数据库连接成功")
-            
+
+            # 根据界面开关唯一决定使用真实/模拟CTP
+            use_mock = self.use_mock_ctp_var.get()
+            if use_mock:
+                from ctp_api_wrapper import CTPTraderAPI as TraderCls
+                self.log("当前选择: 使用模拟CTP API")
+            else:
+                # 严格使用真实实现，若导入失败或库不可用则直接报错
+                try:
+                    from ctp_api_real import CTPTraderAPIReal as TraderCls
+                except Exception as e:
+                    err = f"导入真实CTP实现失败，请检查openctp-ctp安装和环境: {e}"
+                    self.log(err)
+                    messagebox.showerror("错误", err)
+                    return
+                self.log("当前选择: 使用真实CTP API")
+
             # 初始化CTP API
-            self.trader_api = CTPTraderAPI(
-                broker_id=self.broker_id_var.get(),
-                user_id=self.user_id_var.get(),
-                password=self.password_var.get(),
-                front_addr=self.trade_front_var.get()
-            )
-            
-            # 设置回调
-                self.trader_api.set_callback('on_connected', lambda *_: self.log("交易前置连接成功"))
-                def on_login_callback(d, *_):
-                self.is_logged_in = True
+            if use_mock:
+                self.trader_api = TraderCls(
+                    broker_id=self.broker_id_var.get(),
+                    user_id=self.user_id_var.get(),
+                    password=self.password_var.get(),
+                    front_addr=self.trade_front_var.get()
+                )
+            else:
+                # 真实 CTP 需要 AppID 和 AuthCode，用于认证
+                ctp_conf = self.config.get('ctp', {})
+                self.trader_api = TraderCls(
+                    broker_id=self.broker_id_var.get(),
+                    user_id=self.user_id_var.get(),
+                    password=self.password_var.get(),
+                    front_addr=self.trade_front_var.get(),
+                    app_id=ctp_conf.get('app_id'),
+                    auth_code=ctp_conf.get('auth_code')
+                )
+
+
+            # 设置回调，兼容模拟/真实API参数
+            self.trader_api.set_callback('on_connected', lambda *_: self.log("交易前置连接成功"))
+            self.trader_api.set_callback('on_login', lambda d, *_: self.on_ctp_login_success(d))
+            self.trader_api.set_callback('on_error', lambda e, *_: self.log(f"错误: {e}"))
+
+            # 连接和登录
+            if self.trader_api.connect():
                 self.is_connected = True
                 self.connect_btn.config(state=tk.DISABLED)
                 self.disconnect_btn.config(state=tk.NORMAL)
-                # 启用下载按钮（如有）
-                self.log(f"登录成功: {d}")
-                self.update_status("已连接")
-                messagebox.showinfo("成功", "CTP系统登录成功！")
-            self.trader_api.set_callback('on_login', on_login_callback)
-                self.trader_api.set_callback('on_error', lambda e, *_: self.log(f"错误: {e}"))
-            
-            # 连接和登录
-            if self.trader_api.connect():
-                # login() 只是发起登录，真正登录成功由回调处理
-                self.trader_api.login()
+                self.log("CTP系统连接成功")
+                # 注意：这里不能立即设置 is_logged_in = True，必须等待 on_login 回调
             else:
                 messagebox.showerror("错误", "CTP连接失败")
-                
+
         except Exception as e:
             self.log(f"连接失败: {e}")
             messagebox.showerror("错误", f"连接失败: {e}")
-    
+
+    def on_ctp_login_success(self, login_info):
+        """处理CTP登录成功回调"""
+        self.is_logged_in = True  # 确保正确设置登录状态
+        self.update_status("已登录")
+        self.log(f"登录成功: {login_info}")
+        # 登录成功后，可以显示连接成功的提示
+        messagebox.showinfo("成功", "连接成功！")
+
     def disconnect_from_ctp(self):
         """断开CTP连接"""
         if self.trader_api:
@@ -477,21 +594,22 @@ class CTPTradingGUI:
         self.disconnect_btn.config(state=tk.DISABLED)
         self.update_status("已断开")
         self.log("已断开连接")
-    
+
     def download_orders(self):
         """下载委托数据"""
-        if not self.is_logged_in:
+        if not self.is_logged_in:  # 检查登录状态而非连接状态
             messagebox.showwarning("警告", "请先连接到CTP系统")
             return
         def task():
             self.log("开始下载委托数据...")
             try:
                 orders = self.trader_api.query_orders() if self.trader_api else []
-                if orders:
+                if self.db_manager and orders:
                     count = self.db_manager.insert_orders(orders)
-                    self.log(f"委托数据下载并入库完成，共{count}条")
-                else:
+                    self.log(f"已写入 {count} 条委托记录到数据库")
+                elif not orders:
                     self.log("未获取到委托数据")
+                self.log("委托数据下载完成")
             except Exception as e:
                 self.log(f"下载委托数据异常: {e}")
             self.query_orders()
@@ -506,11 +624,12 @@ class CTPTradingGUI:
             self.log("开始下载持仓数据...")
             try:
                 positions = self.trader_api.query_positions() if self.trader_api else []
-                if positions:
+                if self.db_manager and positions:
                     count = self.db_manager.insert_positions(positions)
-                    self.log(f"持仓数据下载并入库完成，共{count}条")
-                else:
+                    self.log(f"已写入 {count} 条持仓记录到数据库")
+                elif not positions:
                     self.log("未获取到持仓数据")
+                self.log("持仓数据下载完成")
             except Exception as e:
                 self.log(f"下载持仓数据异常: {e}")
             self.query_positions()
@@ -533,11 +652,16 @@ class CTPTradingGUI:
             self.log("开始下载合约参数...")
             try:
                 instruments = self.trader_api.query_instruments() if self.trader_api else []
-                if hasattr(self.db_manager, 'insert_instruments'):
-                    count = self.db_manager.insert_instruments(instruments)
-                    self.log(f"合约参数下载并入库完成，共{count}条")
-                else:
-                    self.log("合约参数入库方法未实现，仅下载完成")
+                if self.db_manager and instruments:
+                    # 兼容 insert_instruments/insert_instrument_info
+                    if hasattr(self.db_manager, 'insert_instruments'):
+                        count = self.db_manager.insert_instruments(instruments)
+                    else:
+                        count = self.db_manager.insert_instrument_info(instruments)
+                    self.log(f"已写入 {count} 条合约参数记录到数据库")
+                elif not instruments:
+                    self.log("未获取到合约参数")
+                self.log("合约参数下载完成")
             except Exception as e:
                 self.log(f"下载合约参数异常: {e}")
             self.query_instruments()
@@ -574,8 +698,8 @@ class CTPTradingGUI:
         self.log(f"查询到 {len(orders)} 条委托记录")
     
     def refresh_orders(self):
-        """刷新委托数据"""
-        self.download_orders()
+        """刷新委托数据：只重新查询数据库，不再触发下载"""
+        self.query_orders()
     
     def export_orders(self):
         """导出委托数据为CSV"""
@@ -636,8 +760,8 @@ class CTPTradingGUI:
         self.log(f"查询到 {len(positions)} 条持仓记录")
     
     def refresh_positions(self):
-        """刷新持仓数据"""
-        self.download_positions()
+        """刷新持仓数据：只重新查询数据库，不再触发下载"""
+        self.query_positions()
     
     def export_positions(self):
         """导出持仓数据为CSV"""

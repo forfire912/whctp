@@ -69,7 +69,7 @@ class CTPTraderAPI:
             
             self.is_connected = True
             if self.callbacks['on_connected']:
-                self.callbacks['on_connected']()
+                self.callbacks['on_connected']({'status': 'connected', 'front_addr': self.front_addr})
             
             return True
         except Exception as e:
@@ -132,7 +132,7 @@ class CTPTraderAPI:
     
     def query_orders(self, instrument_id: str = "", exchange_id: str = "") -> list:
         """
-        查询当日委托
+        查询当日委托（模拟返回与账号/合约相关的示例数据）
         
         Args:
             instrument_id: 合约代码
@@ -145,20 +145,45 @@ class CTPTraderAPI:
             print("请先登录")
             return []
         
-        print(f"查询委托信息...")
+        print("查询委托信息...")
         self.request_id += 1
-        
-        # 模拟返回数据（实际应调用CTP API的ReqQryOrder）
-        orders = []
+        # 简单生成2条示例委托
+        trading_day = datetime.now().strftime('%Y%m%d')
+        base_instr = instrument_id or 'cu2501'
+        orders = [
+            {
+                'order_time': '09:30:01',
+                'instrument_id': base_instr,
+                'direction': '买入',
+                'offset_flag': '开仓',
+                'order_price': 72000.0,
+                'order_volume': 1,
+                'traded_volume': 1,
+                'order_status': '全部成交',
+                'remark': f'模拟委托1({self.user_id})',
+                'trading_day': trading_day
+            },
+            {
+                'order_time': '10:15:20',
+                'instrument_id': base_instr,
+                'direction': '卖出',
+                'offset_flag': '平仓',
+                'order_price': 72150.0,
+                'order_volume': 2,
+                'traded_volume': 1,
+                'order_status': '部分成交还在队列中',
+                'remark': f'模拟委托2({self.user_id})',
+                'trading_day': trading_day
+            },
+        ]
         
         if self.callbacks['on_order_rsp']:
             self.callbacks['on_order_rsp'](orders)
-        
         return orders
     
     def query_positions(self, instrument_id: str = "") -> list:
         """
-        查询持仓
+        查询持仓（模拟返回与账号/合约相关的示例数据）
         
         Args:
             instrument_id: 合约代码
@@ -170,20 +195,31 @@ class CTPTraderAPI:
             print("请先登录")
             return []
         
-        print(f"查询持仓信息...")
+        print("查询持仓信息...")
         self.request_id += 1
-        
-        # 模拟返回数据（实际应调用CTP API的ReqQryInvestorPosition）
-        positions = []
-        
+        trading_day = datetime.now().strftime('%Y%m%d')
+        base_instr = instrument_id or 'cu2501'
+        positions = [
+            {
+                'instrument_id': base_instr,
+                'direction': '多头',
+                'position_type': '总仓',
+                'volume': 3,
+                'available_volume': 2,
+                'open_price': 71500.0,
+                'position_price': 71800.0,
+                'close_profit': 500.0,
+                'position_profit': 900.0,
+                'trading_day': trading_day
+            }
+        ]
         if self.callbacks['on_position_rsp']:
             self.callbacks['on_position_rsp'](positions)
-        
         return positions
     
     def query_trades(self, instrument_id: str = "") -> list:
         """
-        查询成交
+        查询成交（模拟返回与账号/合约相关的示例数据）
         
         Args:
             instrument_id: 合约代码
@@ -195,20 +231,29 @@ class CTPTraderAPI:
             print("请先登录")
             return []
         
-        print(f"查询成交信息...")
+        print("查询成交信息...")
         self.request_id += 1
-        
-        # 模拟返回数据（实际应调用CTP API的ReqQryTrade）
-        trades = []
-        
+        trading_day = datetime.now().strftime('%Y%m%d')
+        base_instr = instrument_id or 'cu2501'
+        trades = [
+            {
+                'trade_time': '09:30:02',
+                'instrument_id': base_instr,
+                'direction': '买入',
+                'offset_flag': '开仓',
+                'price': 72000.0,
+                'volume': 1,
+                'trade_id': 'T001',
+                'trading_day': trading_day
+            }
+        ]
         if self.callbacks['on_trade_rsp']:
             self.callbacks['on_trade_rsp'](trades)
-        
         return trades
     
     def query_instruments(self, instrument_id: str = "", exchange_id: str = "") -> list:
         """
-        查询合约
+        查询合约（模拟返回几个常见品种）
         
         Args:
             instrument_id: 合约代码
@@ -221,16 +266,65 @@ class CTPTraderAPI:
             print("请先登录")
             return []
         
-        print(f"查询合约信息...")
+        print("查询合约信息...")
         self.request_id += 1
-        
-        # 模拟返回数据（实际应调用CTP API的ReqQryInstrument）
-        instruments = []
+        insts = [
+            {
+                'instrument_id': 'cu2501',
+                'exchange_id': 'SHFE',
+                'instrument_name': '铜2501',
+                'product_id': 'cu',
+                'product_class': '期货',
+                'delivery_year': 2025,
+                'delivery_month': 1,
+                'volume_multiple': 5,
+                'price_tick': 10.0,
+                'create_date': '20241001',
+                'open_date': '20241101',
+                'expire_date': '20250115',
+                'start_delivery_date': '20250101',
+                'end_delivery_date': '20250115',
+                'is_trading': 1,
+                'long_margin_ratio': 0.1,
+                'short_margin_ratio': 0.1,
+                'max_market_order_volume': 100,
+                'min_market_order_volume': 1,
+                'max_limit_order_volume': 100,
+                'min_limit_order_volume': 1
+            },
+            {
+                'instrument_id': 'rb2501',
+                'exchange_id': 'SHFE',
+                'instrument_name': '螺纹钢2501',
+                'product_id': 'rb',
+                'product_class': '期货',
+                'delivery_year': 2025,
+                'delivery_month': 1,
+                'volume_multiple': 10,
+                'price_tick': 1.0,
+                'create_date': '20241001',
+                'open_date': '20241101',
+                'expire_date': '20250115',
+                'start_delivery_date': '20250101',
+                'end_delivery_date': '20250115',
+                'is_trading': 1,
+                'long_margin_ratio': 0.08,
+                'short_margin_ratio': 0.08,
+                'max_market_order_volume': 200,
+                'min_market_order_volume': 1,
+                'max_limit_order_volume': 200,
+                'min_limit_order_volume': 1
+            }
+        ]
+        # 简单按条件过滤
+        if instrument_id:
+            insts = [i for i in insts if i['instrument_id'] == instrument_id]
+        if exchange_id:
+            insts = [i for i in insts if i['exchange_id'] == exchange_id]
         
         if self.callbacks['on_instrument_rsp']:
-            self.callbacks['on_instrument_rsp'](instruments)
-        
-        return instruments
+            self.callbacks['on_instrument_rsp'](insts)
+        return insts
 
 
 class CTPMarketAPI:
