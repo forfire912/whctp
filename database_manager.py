@@ -7,6 +7,7 @@ MySQL数据库管理模块
 
 import pymysql
 from pymysql import Error
+from pymysql.cursors import DictCursor
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import logging
@@ -37,18 +38,20 @@ class DatabaseManager:
         self.user = user
         self.password = password
         self.database = database
-        self.connection = None
+        # 不再长时间持有共享连接，改为按需获取
+        self.connection: Optional[pymysql.Connection] = None
     
     def connect(self) -> bool:
         """连接到MySQL数据库"""
         try:
+            # 立即建立一次连接用于初始化数据库和表结构，之后每个操作再按需获取新连接
             self.connection = pymysql.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
                 password=self.password,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
+                charset="utf8mb4",
+                autocommit=False
             )
             logger.info(f"成功连接到MySQL服务器 {self.host}:{self.port}")
             
@@ -61,11 +64,29 @@ class DatabaseManager:
             # 创建表结构
             self._create_tables()
             
+            # 初始化完成后立即关闭这次连接，避免在多线程中长时间共享
+            self.connection.close()
+            self.connection = None
+            
             return True
         except Error as e:
             logger.error(f"数据库连接失败: {e}")
+            self.connection = None
             return False
     
+    def _get_connection(self) -> pymysql.Connection:
+        """为当前操作获取一个新的数据库连接"""
+        return pymysql.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=self.database,
+            charset="utf8mb4",
+            autocommit=False,
+            cursorclass=DictCursor,  # 查询结果使用字典形式
+        )
+
     def _create_database(self):
         """创建数据库"""
         try:
@@ -77,7 +98,7 @@ class DatabaseManager:
             logger.error(f"创建数据库失败: {e}")
     
     def _create_tables(self):
-        """创建数据表结构"""
+        """创建数据库表结构"""
         try:
             with self.connection.cursor() as cursor:
                 # 当日委托表
@@ -129,18 +150,18 @@ class DatabaseManager:
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         instrument_id VARCHAR(31) COMMENT '合约代码',
                         exchange_id VARCHAR(10) COMMENT '交易所代码',
-                        update_time VARCHAR(20) COMMENT '更新时间',
+                        update_time VARCHAR(20) COMMENT '行情更新时间 (HH:MM:SS)',
                         last_price DECIMAL(15, 4) COMMENT '最新价',
-                        pre_settlement_price DECIMAL(15, 4) COMMENT '昨结算',
-                        pre_close_price DECIMAL(15, 4) COMMENT '昨收盘',
-                        open_price DECIMAL(15, 4) COMMENT '今开盘',
+                        pre_settlement_price DECIMAL(15, 4) COMMENT '昨结算价',
+                        pre_close_price DECIMAL(15, 4) COMMENT '昨收盘价',
+                        open_price DECIMAL(15, 4) COMMENT '今开盘价',
                         highest_price DECIMAL(15, 4) COMMENT '最高价',
                         lowest_price DECIMAL(15, 4) COMMENT '最低价',
                         volume INT COMMENT '成交量',
                         turnover DECIMAL(20, 2) COMMENT '成交额',
                         open_interest INT COMMENT '持仓量',
-                        close_price DECIMAL(15, 4) COMMENT '今收盘',
-                        settlement_price DECIMAL(15, 4) COMMENT '今结算',
+                        close_price DECIMAL(15, 4) COMMENT '今收盘价',
+                        settlement_price DECIMAL(15, 4) COMMENT '今结算价',
                         upper_limit_price DECIMAL(15, 4) COMMENT '涨停价',
                         lower_limit_price DECIMAL(15, 4) COMMENT '跌停价',
                         bid_price1 DECIMAL(15, 4) COMMENT '买一价',
@@ -149,7 +170,7 @@ class DatabaseManager:
                         ask_volume1 INT COMMENT '卖一量',
                         trading_day VARCHAR(20) COMMENT '交易日',
                         create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        record_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         INDEX idx_instrument (instrument_id),
                         INDEX idx_trading_day (trading_day),
                         INDEX idx_update_time (update_time)
@@ -191,7 +212,7 @@ class DatabaseManager:
                 self.connection.commit()
                 logger.info("数据表结构已创建")
         except Error as e:
-            logger.error(f"创建表失败: {e}")
+            logger.error(f"创建数据表失败: {e}")
             self.connection.rollback()
     
     def insert_orders(self, orders: List[Dict[str, Any]]) -> int:
@@ -208,7 +229,8 @@ class DatabaseManager:
             return 0
         
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = """
                     INSERT INTO daily_orders 
                     (order_time, instrument_id, direction, offset_flag, order_price, 
@@ -218,14 +240,22 @@ class DatabaseManager:
                             %(order_status)s, %(remark)s, %(trading_day)s)
                 """
                 count = cursor.executemany(sql, orders)
-                self.connection.commit()
+                conn.commit()
                 logger.info(f"成功插入 {count} 条委托记录")
                 return count
         except Error as e:
             logger.error(f"插入委托数据失败: {e}")
-            self.connection.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return 0
-    
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def insert_positions(self, positions: List[Dict[str, Any]]) -> int:
         """
         批量插入持仓数据（使用REPLACE INTO避免重复）
@@ -240,7 +270,8 @@ class DatabaseManager:
             return 0
         
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = """
                     REPLACE INTO daily_positions 
                     (instrument_id, direction, position_type, volume, available_volume,
@@ -250,14 +281,22 @@ class DatabaseManager:
                             %(close_profit)s, %(position_profit)s, %(trading_day)s)
                 """
                 count = cursor.executemany(sql, positions)
-                self.connection.commit()
+                conn.commit()
                 logger.info(f"成功更新 {count} 条持仓记录")
                 return count
         except Error as e:
             logger.error(f"插入持仓数据失败: {e}")
-            self.connection.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return 0
-    
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def insert_market_data(self, market_data: List[Dict[str, Any]]) -> int:
         """
         批量插入行情数据
@@ -272,7 +311,8 @@ class DatabaseManager:
             return 0
         
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = """
                     INSERT INTO market_data 
                     (instrument_id, exchange_id, update_time, last_price, pre_settlement_price,
@@ -287,14 +327,22 @@ class DatabaseManager:
                             %(bid_volume1)s, %(ask_price1)s, %(ask_volume1)s, %(trading_day)s)
                 """
                 count = cursor.executemany(sql, market_data)
-                self.connection.commit()
+                conn.commit()
                 logger.info(f"成功插入 {count} 条行情记录")
                 return count
         except Error as e:
             logger.error(f"插入行情数据失败: {e}")
-            self.connection.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return 0
-    
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def insert_instrument_info(self, instruments: List[Dict[str, Any]]) -> int:
         """
         批量插入合约参数数据
@@ -309,7 +357,8 @@ class DatabaseManager:
             return 0
         
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = """
                     INSERT INTO instrument_info 
                     (instrument_id, exchange_id, instrument_name, product_id, product_class,
@@ -331,30 +380,29 @@ class DatabaseManager:
                         short_margin_ratio=VALUES(short_margin_ratio)
                 """
                 count = cursor.executemany(sql, instruments)
-                self.connection.commit()
+                conn.commit()
                 logger.info(f"成功更新 {count} 条合约参数记录")
                 return count
         except Error as e:
             logger.error(f"插入合约参数失败: {e}")
-            self.connection.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return 0
-    
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def query_orders(self, trading_day: Optional[str] = None, 
                     instrument_id: Optional[str] = None,
                     limit: int = 1000) -> List[Dict[str, Any]]:
-        """
-        查询委托数据
-        
-        Args:
-            trading_day: 交易日
-            instrument_id: 合约代码
-            limit: 返回记录数限制
-            
-        Returns:
-            委托数据列表
-        """
+        """查询委托数据，返回字典列表"""
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = "SELECT * FROM daily_orders WHERE 1=1"
                 params = []
                 
@@ -370,25 +418,23 @@ class DatabaseManager:
                 params.append(limit)
                 
                 cursor.execute(sql, params)
-                return cursor.fetchall()
+                rows = cursor.fetchall()
+                return rows
         except Error as e:
             logger.error(f"查询委托数据失败: {e}")
             return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     def query_positions(self, trading_day: Optional[str] = None,
                        instrument_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        查询持仓数据
-        
-        Args:
-            trading_day: 交易日
-            instrument_id: 合约代码
-            
-        Returns:
-            持仓数据列表
-        """
+        """查询持仓数据，返回字典列表"""
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = "SELECT * FROM daily_positions WHERE 1=1"
                 params = []
                 
@@ -403,27 +449,24 @@ class DatabaseManager:
                 sql += " ORDER BY instrument_id, direction"
                 
                 cursor.execute(sql, params)
-                return cursor.fetchall()
+                rows = cursor.fetchall()
+                return rows
         except Error as e:
             logger.error(f"查询持仓数据失败: {e}")
             return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     def query_market_data(self, trading_day: Optional[str] = None,
                          instrument_id: Optional[str] = None,
                          limit: int = 1000) -> List[Dict[str, Any]]:
-        """
-        查询行情数据
-        
-        Args:
-            trading_day: 交易日
-            instrument_id: 合约代码
-            limit: 返回记录数限制
-            
-        Returns:
-            行情数据列表
-        """
+        """查询行情数据，返回字典列表"""
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = "SELECT * FROM market_data WHERE 1=1"
                 params = []
                 
@@ -439,27 +482,24 @@ class DatabaseManager:
                 params.append(limit)
                 
                 cursor.execute(sql, params)
-                return cursor.fetchall()
+                rows = cursor.fetchall()
+                return rows
         except Error as e:
             logger.error(f"查询行情数据失败: {e}")
             return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     def query_instrument_info(self, instrument_id: Optional[str] = None,
                              exchange_id: Optional[str] = None,
                              is_trading: Optional[bool] = None) -> List[Dict[str, Any]]:
-        """
-        查询合约参数
-        
-        Args:
-            instrument_id: 合约代码
-            exchange_id: 交易所代码
-            is_trading: 是否交易中
-            
-        Returns:
-            合约参数列表
-        """
+        """查询合约参数，返回字典列表"""
         try:
-            with self.connection.cursor() as cursor:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
                 sql = "SELECT * FROM instrument_info WHERE 1=1"
                 params = []
                 
@@ -478,16 +518,43 @@ class DatabaseManager:
                 sql += " ORDER BY instrument_id"
                 
                 cursor.execute(sql, params)
-                return cursor.fetchall()
+                rows = cursor.fetchall()
+                return rows
         except Error as e:
             logger.error(f"查询合约参数失败: {e}")
             return []
-    
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def get_distinct_trading_days(self, table_name: str):
+        """获取指定表中已存在的去重交易日列表，按交易日倒序排序"""
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                sql = f"SELECT DISTINCT trading_day FROM {table_name} ORDER BY trading_day DESC"
+                cursor.execute(sql)
+                rows = cursor.fetchall()
+                return [row['trading_day'] for row in rows if row.get('trading_day')]
+        except Exception as e:
+            # 这里不能直接调用 GUI 的 log，只做简单打印
+            print(f"获取交易日列表失败: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
     def close(self):
         """关闭数据库连接"""
         if self.connection:
-            self.connection.close()
-            logger.info("数据库连接已关闭")
+            try:
+                self.connection.close()
+            except Exception:
+                pass
+            self.connection = None
 
 
 if __name__ == "__main__":

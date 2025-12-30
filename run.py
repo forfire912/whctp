@@ -7,6 +7,9 @@
 import sys
 import os
 
+# 设置环境变量，启用真实CTP API
+os.environ['USE_MOCK_CTP'] = 'false'
+
 # 添加当前目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

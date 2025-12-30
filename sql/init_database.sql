@@ -6,13 +6,6 @@
 -- 说明: 包含4个数据表的完整建表语句
 -- ============================================================================
 
--- 创建数据库
-CREATE DATABASE IF NOT EXISTS qihuo 
-CHARACTER SET utf8mb4 
-COLLATE utf8mb4_unicode_ci;
-
-USE qihuo;
-
 -- ============================================================================
 -- 1. 当日委托表 (daily_orders)
 -- 用途: 记录所有委托订单信息
@@ -96,7 +89,7 @@ CREATE TABLE market_data (
     ask_volume1 INT COMMENT '卖一量',
     trading_day VARCHAR(20) COMMENT '交易日 (YYYYMMDD)',
     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
-    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+    record_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
     
     -- 索引
     INDEX idx_instrument (instrument_id),
